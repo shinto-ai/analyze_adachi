@@ -1,9 +1,8 @@
 import pandas as pd
 import numpy as np
-from typing import Dict, List, Tuple, Optional
+from typing import List, Tuple, Optional
 import random
 import os
-from pathlib import Path
 import sys
 import time
 import logging
@@ -73,8 +72,8 @@ def get_excel_files_from_directory(directory: str) -> List[str]:
             raise DataAnalysisError(
                 f"'data'ディレクトリが見つかりません。\n"
                 f"以下の手順で準備してください：\n"
-                f"1. スクリプトと同じフォルダに'data'フォルダを作成\n"
-                f"2. 'data'フォルダに分析対象のExcelファイルを2つ配置"
+                f"1. 'analyze_data.py'と同じフォルダに'data'フォルダを作成\n"
+                f"2. 'data'フォルダに分析対象のExcelファイル('.xlsx' or '.xls')を配置してください。"
             )
 
         excel_files = [f for f in os.listdir(directory) 
@@ -83,14 +82,7 @@ def get_excel_files_from_directory(directory: str) -> List[str]:
         if not excel_files:
             raise DataAnalysisError(
                 f"'data'フォルダにExcelファイルが見つかりません。\n"
-                f"分析対象のExcelファイル(.xlsx or .xls)を2つ配置してください。"
-            )
-        
-        if len(excel_files) != 2:
-            raise DataAnalysisError(
-                f"Excelファイルは必ず2つ必要です（現在: {len(excel_files)}個）\n"
-                f"見つかったファイル:\n" + 
-                "\n".join(f"- {f}" for f in excel_files)
+                f"分析対象のExcelファイル(.xlsx or .xls)を配置してください。"
             )
         
         # ファイルの妥当性チェック
@@ -152,6 +144,7 @@ def get_sheet_data(file_path: str) -> List[pd.DataFrame]:
         
     except Exception as e:
         raise DataAnalysisError(f"ファイル読み込み中にエラーが発生しました ({file_path}): {str(e)}")
+
 def validate_iteration_input(input_value: str) -> Optional[int]:
     """
     ランダム化検定の試行回数の入力値を検証
@@ -199,7 +192,7 @@ def create_cross_tabulation(df: pd.DataFrame) -> pd.DataFrame:
     try:
         row_totals = df.sum(axis=1)
         col_totals = df.sum(axis=0)
-        grand_total = df.sum().sum()
+        grand_total = df.values.sum()
 
         df_copy = df.copy()
         df_copy['Row Total'] = row_totals
@@ -214,11 +207,6 @@ def create_cross_tabulation(df: pd.DataFrame) -> pd.DataFrame:
 def save_cross_tabulation(df: pd.DataFrame, base_filename: str, output_dir: str = 'output') -> None:
     """
     クロス集計表をExcelファイルとして保存
-    
-    Parameters:
-        df (pd.DataFrame): 保存するクロス集計表
-        base_filename (str): 元のファイル名（拡張子なし）
-        output_dir (str): 出力ディレクトリ
     """
     try:
         # 出力ディレクトリの作成（存在しない場合）
@@ -260,10 +248,11 @@ def calculate_chi_square(observed_df: pd.DataFrame, expected_df: pd.DataFrame) -
         observed = observed_df.drop('Column Total').drop('Row Total', axis=1)
         expected = expected_df.drop('Column Total').drop('Row Total', axis=1)
         
-        row_chi_squares = observed.apply(
-            lambda row: np.sum((row - expected.loc[row.name])**2 / expected.loc[row.name]), 
-            axis=1
-        )
+        # ゼロ除算を回避
+        with np.errstate(divide='ignore', invalid='ignore'):
+            chi_square_elements = (observed - expected) ** 2 / expected
+            chi_square_elements = chi_square_elements.replace([np.inf, -np.inf], 0).fillna(0)
+            row_chi_squares = chi_square_elements.sum(axis=1)
         
         return row_chi_squares.sum(), row_chi_squares
         
@@ -292,7 +281,7 @@ def main():
         print("\n=== データ分析プログラム ===")
         print("\n前提条件:")
         print("1. スクリプトと同じフォルダに'data'フォルダが必要です")
-        print("2. 'data'フォルダに分析対象のExcelファイルを2つ配置してください")
+        print("2. 'data'フォルダに分析対象のExcelファイルを配置してください")
         print("3. 各Excelファイルには、分析対象のデータが含まれている必要があります")
         print("\n処理を開始します...\n")
         
@@ -306,7 +295,7 @@ def main():
             raise DataAnalysisError(
                 f"'data'ディレクトリを作成しました: {data_dir}\n"
                 f"以下の手順で準備してください:\n"
-                f"1. 作成された'data'フォルダに分析対象のExcelファイルを2つ配置\n"
+                f"1. 作成された'data'フォルダに分析対象のExcelファイルを配置\n"
                 f"2. プログラムを再実行"
             )
         
@@ -318,36 +307,53 @@ def main():
         
         # データの読み込みと検証
         print("\nファイルを読み込んでいます...")
-        first_sheets = get_sheet_data(excel_files[0])
-        second_sheets = get_sheet_data(excel_files[1])
+        all_sheets_list = []
+        sheet_counts = []
         
-        print(f"\nファイル1の有効シート数: {len(first_sheets)}")
-        print(f"ファイル2の有効シート数: {len(second_sheets)}")
+        for file in excel_files:
+            sheets = get_sheet_data(file)
+            all_sheets_list.append(sheets)
+            sheet_counts.append(len(sheets))
+        
+        total_sheets = sum(sheet_counts)
+        all_sheets = [sheet for sheets in all_sheets_list for sheet in sheets]
+        
+        print(f"\n合計有効シート数: {total_sheets}")
         
         # 元のデータの分析とクロス集計表の保存
         print("\nデータを分析しています...")
         
-        # クロス集計表の作成と保存
+        # クロス集計表と期待度数の作成と保存
         if not os.path.exists(output_dir):
             os.makedirs(output_dir)
             
-        for i, sheets in enumerate([first_sheets, second_sheets]):
+        for i, sheets in enumerate(all_sheets_list):
             total_df = process_data_frames(sheets)
             cross_tab = create_cross_tabulation(total_df)
+            expected_freq = calculate_expected_frequencies(cross_tab)
+            
             base_filename = os.path.splitext(os.path.basename(excel_files[i]))[0]
             timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+            
+            # クロス集計表の保存
             output_filename = f"{base_filename}_crosstab_{timestamp}.xlsx"
             output_path = os.path.join(output_dir, output_filename)
             cross_tab.to_excel(output_path)
+            
+            # 期待度数の保存
+            expected_output_filename = f"{base_filename}_expected_{timestamp}.xlsx"
+            expected_output_path = os.path.join(output_dir, expected_output_filename)
+            expected_freq.to_excel(expected_output_path)
         
-        original_chi_square = analyze_data(first_sheets) + analyze_data(second_sheets)
+        # 元のカイ二乗値の計算
+        original_chi_square = sum(analyze_data(sheets) for sheets in all_sheets_list)
         print(f"元のデータの全体カイ二乗値: {original_chi_square:.6f}")
         
         # ランダム化テストのパラメータ入力と検証
         while True:
             try:
                 print("\n--- ランダム化検定の設定 ---")
-                print("推奨試行回数: 1000-10000")
+                print("推奨試行回数: 10000")
                 print("注意: 大きな値を設定すると処理時間が長くなります")
                 input_value = input("試行回数を入力してください: ")
                 n_iterations = validate_iteration_input(input_value)
@@ -363,65 +369,57 @@ def main():
         # ランダム化テストの実行
         print("\nランダム化検定を開始します...")
         count_greater_equal = 0
-        all_sheets = first_sheets + second_sheets
-        n_first_sheets = len(first_sheets)
         
         start_time = time.time()
         
         try:
             for i in range(n_iterations):
-                # 10%ごとに進捗とタイミング情報を表示
-                if i % (n_iterations // 10) == 0 or i == n_iterations - 1:
-                    elapsed_time = time.time() - start_time
-                    remaining_time = (elapsed_time / (i + 1)) * (n_iterations - i - 1)
-                    print_progress_bar(i + 1, n_iterations, 
-                                    prefix='進捗:', 
-                                    suffix='完了', 
-                                    length=50)
-                    print(f"\n経過時間: {elapsed_time:.1f}秒")
-                    print(f"推定残り時間: {remaining_time:.1f}秒\n")
-                
                 # シートをシャッフル
                 random.shuffle(all_sheets)
                 
                 # グループに分割
-                random_first = all_sheets[:n_first_sheets]
-                random_second = all_sheets[n_first_sheets:]
+                random_groups = []
+                start_idx = 0
+                for count in sheet_counts:
+                    end_idx = start_idx + count
+                    random_groups.append(all_sheets[start_idx:end_idx])
+                    start_idx = end_idx
                 
                 # ランダム化したデータの分析
-                random_chi_square = analyze_data(random_first) + analyze_data(random_second)
+                random_chi_square = sum(analyze_data(group) for group in random_groups)
                 
-                # 比較とカウント（修正後の正しい比較）
-                if original_chi_square >= random_chi_square:
+                # 比較とカウント
+                if original_chi_square < random_chi_square:
                     count_greater_equal += 1
-                    
+                
+                # 進捗の表示
+                if n_iterations >= 10 and (i % (n_iterations // 10) == 0 or i == n_iterations - 1):
+                    print_progress_bar(i + 1, n_iterations, prefix='進捗:', suffix='完了', length=50)
+            
+            # 結果の表示
+            proportion = count_greater_equal / n_iterations
+            total_time = time.time() - start_time
+            
+            print("\n=== 分析結果 ===")
+            print(f"処理時間: {total_time:.1f}秒")
+            print(f"試行回数: {n_iterations}")
+            print(f"元のカイ二乗値: {original_chi_square:.6f}")
+            print(f"元のカイ二乗値の方が大きい回数: {count_greater_equal}")
+            print(f"元のカイ二乗値の方が大きい割合: {proportion:.4f}")
+            
         except KeyboardInterrupt:
             print("\n\n処理を中断しました。")
-            if i > 0:
-                print("途中までの結果を表示します。")
-                n_iterations = i + 1
-            else:
-                return
-        
-        # 結果の表示
-        proportion = count_greater_equal / n_iterations
-        total_time = time.time() - start_time
-        
-        print("\n=== 分析結果 ===")
-        print(f"処理時間: {total_time:.1f}秒")
-        print(f"試行回数: {n_iterations}")
-        print(f"元のカイ二乗値: {original_chi_square:.6f}")
-        print(f"元のカイ二乗値以上となった回数: {count_greater_equal}")
-        print(f"元のカイ二乗値以上となった割合: {proportion:.4f}")
-        
+        except Exception as e:
+            print(f"\n予期せぬエラーが発生しました: {e}")
+        finally:
+            print("\nプログラムを終了します。")
+
     except KeyboardInterrupt:
         print("\n\nプログラムを中断しました。")
     except DataAnalysisError as e:
         print(f"\nエラー: {e}")
     except Exception as e:
         print(f"\n予期せぬエラーが発生しました: {e}")
-    finally:
-        print("\nプログラムを終了します。")
 
 if __name__ == "__main__":
     main()
