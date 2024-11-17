@@ -388,8 +388,9 @@ def main():
                 # ランダム化したデータの分析
                 random_chi_square = sum(analyze_data(group) for group in random_groups)
                 
-                # 比較とカウント
-                if original_chi_square < random_chi_square:
+                ##### オリジナルのカイ二乗値が大きい場合にカウントする #####
+                ##### もし、オリジナルのカイ二乗値"以上"をカウントしたい場合は、不等号を">="に変更する #####
+                if original_chi_square > random_chi_square:
                     count_greater_equal += 1
                 
                 # 進捗の表示
